@@ -1,0 +1,53 @@
+# Whittler Configuration Example
+# Copy this file to whittler.yaml and customize for your environment
+
+# Beads CLI configuration
+beads:
+  # Command to poll for ready beads
+  command: "bd"
+  # Poll interval in seconds
+  poll_interval: 5
+  # Maximum number of concurrent beads to process
+  max_concurrent: 3
+
+# Git configuration
+git:
+  # Main branch name
+  main_branch: "main"
+  # Base directory for worktrees
+  worktree_base: ".claude/worktrees"
+  # Author name for commits
+  author_name: "Whittler"
+  # Author email for commits
+  author_email: "whittler@anthropic.com"
+
+# Docker configuration
+docker:
+  # Docker image to use for solver agents
+  image: "whittler-solver:latest"
+  # Docker network for containers
+  network: "bridge"
+  # Timeout for container execution (seconds)
+  timeout: 3600
+  # Environment variables to pass to containers
+  env:
+    CLAUDE_API_KEY: "${CLAUDE_API_KEY}"
+    LOG_LEVEL: "INFO"
+
+# Logging configuration
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "INFO"
+  # Log file path (optional)
+  file: null
+  # Log format
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Orchestrator configuration
+orchestrator:
+  # Enable dry-run mode (no actual changes)
+  dry_run: false
+  # Retry failed beads
+  max_retries: 3
+  # Keep worktrees after completion for debugging
+  keep_worktrees: false
