@@ -1,0 +1,6 @@
+FROM alpine:latest
+RUN apk add --no-cache jq bash
+
+COPY test_solver.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
