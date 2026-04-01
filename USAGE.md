@@ -38,6 +38,8 @@ max_lanes: 4                       # how many beads to work concurrently
 container_image: whittler-solver:latest
 validation_command: "pytest"       # run after each bead is solved
 agent_timeout: 900                 # kill container after 15 min
+max_retries: 3                     # failures before a bead is quarantined
+shutdown_timeout: 60               # seconds to drain in-flight tasks on SIGTERM
 ```
 
 **4. Export your API key**
@@ -66,7 +68,7 @@ whittler run --dry-run             # preview what would be claimed, no container
 whittler run --lanes 1             # process one bead at a time
 ```
 
-`Ctrl+C` (or `SIGTERM`) triggers graceful shutdown: no new beads are claimed, the current batch finishes.
+`Ctrl+C` (or `SIGTERM`) triggers graceful shutdown: no new beads are claimed, and in-flight tasks are given `shutdown_timeout` seconds to finish. Any tasks still running after that are cancelled and their beads are unclaimed immediately.
 
 #### Checking status
 
@@ -88,7 +90,20 @@ cat .whittler-state.json | python3 -m json.tool
 whittler cleanup
 ```
 
-Removes orphaned git worktrees and stopped Docker containers from a previous run. Whittler also does this automatically on startup.
+Removes orphaned git worktrees and stopped Docker containers from a previous run. Also reads `.whittler-state.json` and unclams any beads in `Claimed`/`Solving`/`Merging` state whose worktrees no longer exist, returning them to the ready queue.
+
+Whittler also runs this cleanup automatically on startup.
+
+#### Deferred (quarantined) beads
+
+When a bead fails `max_retries` times in a row (agent exit 1, timeout, or no file changes), Whittler moves it to `deferred` status instead of re-queuing it indefinitely. To requeue a deferred bead after fixing its design:
+
+```bash
+bd show <id>                           # inspect the bead and current design
+tail -n 200 whittler.log | grep <id>   # find the failure logs
+bd update <id> --design "..."          # rewrite the design field
+bd update <id> --status open           # reset to open so Whittler picks it up again
+```
 
 #### Merge conflicts
 
@@ -124,6 +139,14 @@ git branch -d bead/<id>
 tail -f whittler.log              # all activity (DEBUG level)
 ```
 
+Structured lifecycle events are logged as `WHITTLER_EVENT <json>` lines. Extract them with:
+
+```bash
+grep WHITTLER_EVENT whittler.log | sed 's/.*WHITTLER_EVENT //' | jq .
+```
+
+Event types: `claimed`, `solving`, `merged`, `conflict`, `failed`, `quarantined`, `error`.
+
 ---
 
 ### Bringing Your Own Solver
@@ -156,6 +179,7 @@ Then set `container_image: my-solver:latest` in your config.
 | Long build (> 10 min) | `agent_timeout: 1800`, `max_lanes: 2` |
 | Expensive API calls | `max_lanes: 1`, `poll_interval: 10` |
 | Large repo | `container_memory: 8g`, `container_cpu: 4` |
+| Slow shutdown OK | `shutdown_timeout: 300` (5 min drain) |
 
 ---
 
@@ -217,10 +241,12 @@ with open(".whittler-state.json") as f:
 
 for bead_id, record in state.items():
     print(bead_id, record["outcome"])
-    # outcomes: "merged", "conflict", "agent_failed", "timeout", "no_changes"
+    # outcomes: "merged", "conflict", "agent_failed", "timeout", "no_changes", "error"
 ```
 
 Or use the beads MCP server / `bd show <id>` to inspect status.
+
+Check `bd show <id>` for beads that may have been quarantined — their status will be `deferred` rather than `open` or `closed`.
 
 ### Handling Failures
 
@@ -231,14 +257,40 @@ Or use the beads MCP server / `bd show <id>` to inspect status.
 | `agent_failed` | Solver exited non-zero | Check `whittler.log` for container output; rewrite the design field |
 | `timeout` | Container exceeded `agent_timeout` | Break the bead into smaller pieces |
 | `no_changes` | Agent made no file changes | Design field may be unclear; check logs |
+| `error` | Unexpected exception | Check `whittler.log`; bead was unclaimed automatically |
 
-For `agent_failed` or `no_changes`, read the logs and update the bead's `design` field with more specific instructions before unclaiming and requeuing:
+Beads that fail `max_retries` times are moved to `deferred` by Whittler. To requeue after fixing:
+
+```bash
+bd update <id> --design "..."          # rewrite the design field
+bd update <id> --status open           # requeue
+```
+
+For `agent_failed` or `no_changes` (before quarantine), read the logs and update the bead's `design` field:
 
 ```bash
 bd show <id>                           # inspect the bead
 tail -n 200 whittler.log | grep <id>   # find container output
 bd update <id> --design "..."          # rewrite the design field
 bd update <id> --status open           # requeue
+```
+
+### Reading Structured Events
+
+Whittler emits `WHITTLER_EVENT <json>` log lines at every lifecycle transition. These are useful for programmatic monitoring:
+
+```python
+import json, subprocess
+
+events = []
+log = open("whittler.log").read()
+for line in log.splitlines():
+    if "WHITTLER_EVENT" in line:
+        _, _, payload = line.partition("WHITTLER_EVENT ")
+        events.append(json.loads(payload))
+
+# Find all quarantined beads
+quarantined = [e for e in events if e["event"] == "quarantined"]
 ```
 
 ### Beads That Work Well vs. Beads That Fail
@@ -283,6 +335,7 @@ with open(".whittler-state.json") as f:
 
 in_flight = [r for r in state.values() if r["state"] not in ("Closed", "Failed")]
 failed = [r for r in state.values() if r["outcome"] in ("conflict", "agent_failed", "timeout")]
+deferred = []  # beads quarantined by Whittler — check bd show <id> for status=deferred
 ```
 
 ### When to Intervene
@@ -291,6 +344,7 @@ Whittler is autonomous — the right default is to leave it running. Intervene w
 
 - A bead shows `conflict` outcome → resolve the merge manually
 - Multiple beads keep failing on the same file → add dependency ordering
+- A bead has been quarantined (`deferred`) → review logs, rewrite the design field
 - The log shows repeated `agent_failed` for the same bead → rewrite the design field
 - Whittler hasn't picked up new beads → check `whittler status` and the lock file
 

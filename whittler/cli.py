@@ -17,6 +17,7 @@ from argparse import Namespace
 from datetime import datetime
 
 from whittler.core import WhittlerConfig
+from whittler import beads
 from whittler import git
 from whittler.containers import ContainerManager
 from whittler.orchestrator import Orchestrator
@@ -228,13 +229,34 @@ def cmd_cleanup(args: Namespace) -> int:
     """Remove stale worktrees and orphan containers."""
     config = _resolve_config(args)
 
-    async def _run_cleanup() -> tuple[list[str], list[str]]:
+    async def _run_cleanup() -> tuple[list[str], list[str], list[str]]:
         cleaned_wt = await git.cleanup_stale_worktrees(config.repo_root, config.worktree_base)
         cm = ContainerManager(config)
         cleaned_containers = await cm.cleanup_orphans()
-        return cleaned_wt, cleaned_containers
 
-    cleaned_wt, cleaned_containers = asyncio.run(_run_cleanup())
+        # Unclaim beads whose worktrees no longer exist
+        unclaimed_beads: list[str] = []
+        ORPHAN_STATES = {"Claimed", "Solving", "Merging"}
+        if os.path.exists(config.state_file):
+            try:
+                with open(config.state_file) as fh:
+                    state_data = json.load(fh)
+                for bead_id, record in state_data.items():
+                    if record.get("state") not in ORPHAN_STATES:
+                        continue
+                    worktree_path = record.get("worktree_path", "")
+                    if worktree_path and not os.path.exists(worktree_path):
+                        try:
+                            await beads.unclaim(bead_id, config.repo_root)
+                            unclaimed_beads.append(bead_id)
+                        except Exception as exc:
+                            logger.warning("Could not unclaim bead %s: %s", bead_id, exc)
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.warning("Could not read state file for orphan bead cleanup: %s", exc)
+
+        return cleaned_wt, cleaned_containers, unclaimed_beads
+
+    cleaned_wt, cleaned_containers, unclaimed_beads = asyncio.run(_run_cleanup())
 
     if cleaned_wt:
         print(f"Removed {len(cleaned_wt)} stale worktree(s): {', '.join(cleaned_wt)}")
@@ -245,6 +267,11 @@ def cmd_cleanup(args: Namespace) -> int:
         print(f"Removed {len(cleaned_containers)} orphan container(s): {', '.join(cleaned_containers)}")
     else:
         print("No orphan containers found.")
+
+    if unclaimed_beads:
+        print(f"Unclaimed {len(unclaimed_beads)} orphaned bead(s): {', '.join(unclaimed_beads)}")
+    else:
+        print("No orphaned beads to unclaim.")
 
     return 0
 

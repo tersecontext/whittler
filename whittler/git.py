@@ -14,11 +14,6 @@ import shutil
 
 logger = logging.getLogger(__name__)
 
-# Merge lock — callers must acquire this before calling merge_to_main.
-# The orchestrator imports and holds this lock during merge operations to
-# prevent concurrent merges from racing on the main branch.
-_merge_lock = asyncio.Lock()
-
 
 async def _run_git(
     *args: str,
@@ -278,12 +273,9 @@ async def merge_to_main(
 ) -> tuple[bool, str]:
     """Merge *branch* into main with a no-fast-forward merge.
 
-    **This function must be called while holding** :data:`_merge_lock`.  The
-    caller is responsible for acquiring the lock before calling this function
-    and releasing it afterwards, e.g.::
-
-        async with git._merge_lock:
-            ok, files = await git.merge_to_main(branch, bead_id, desc, root)
+    The caller must hold an asyncio.Lock to serialize merges. This ensures only
+    one merge runs at a time, preventing races on the main branch. The Orchestrator
+    owns and manages the lock during merge operations.
 
     Steps:
     1. Verify main is still clean.

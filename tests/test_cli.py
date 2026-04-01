@@ -2,15 +2,18 @@
 Tests for whittler.cli — config resolution and argument parsing.
 """
 
+import asyncio
 import json
 import os
+import tempfile
 import textwrap
 from argparse import Namespace
 from unittest import mock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from whittler.cli import _resolve_config, _apply_cli_overrides, _build_parser
+from whittler.cli import _resolve_config, _apply_cli_overrides, _build_parser, cmd_cleanup
 from whittler.core import WhittlerConfig
 
 
@@ -225,3 +228,126 @@ def test_env_var_same_as_default_still_overrides_file(tmp_path, monkeypatch):
     config = _resolve_config(args)
 
     assert config.max_lanes == 2
+
+
+# ---------------------------------------------------------------------------
+# Helpers for cleanup tests
+# ---------------------------------------------------------------------------
+
+def make_cleanup_args(state_file=None, **kwargs):
+    """Create a minimal args namespace for cmd_cleanup."""
+    return Namespace(
+        config=None,
+        **kwargs,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test: cleanup unclams beads with missing worktrees
+# ---------------------------------------------------------------------------
+
+def test_cleanup_unclaims_orphaned_beads(tmp_path):
+    """Beads in Claimed/Solving/Merging state with missing worktrees are unclaimed."""
+    state = {
+        "bead-1": {
+            "state": "Solving",
+            "worktree_path": str(tmp_path / "wt-bead-1"),  # does NOT exist
+            "config": {"id": "bead-1"},
+        },
+        "bead-2": {
+            "state": "Closed",
+            "worktree_path": str(tmp_path / "wt-bead-2"),  # closed — skip
+            "config": {"id": "bead-2"},
+        },
+    }
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps(state))
+
+    config = WhittlerConfig(
+        repo_root=str(tmp_path),
+        state_file=str(state_file),
+        worktree_base=".worktrees",
+        lock_file=str(tmp_path / "lock"),
+    )
+
+    mock_unclaim = AsyncMock(return_value=True)
+
+    with (
+        patch("whittler.cli.git.cleanup_stale_worktrees", AsyncMock(return_value=[])),
+        patch("whittler.cli.ContainerManager") as MockCM,
+        patch("whittler.cli.beads.unclaim", mock_unclaim),
+        patch("whittler.cli._resolve_config", return_value=config),
+    ):
+        MockCM.return_value.cleanup_orphans = AsyncMock(return_value=[])
+        args = make_cleanup_args()
+        result = cmd_cleanup(args)
+
+    assert result == 0
+    mock_unclaim.assert_called_once_with("bead-1", str(tmp_path))
+
+
+# ---------------------------------------------------------------------------
+# Test: cleanup skips beads with existing worktrees
+# ---------------------------------------------------------------------------
+
+def test_cleanup_skips_beads_with_existing_worktrees(tmp_path):
+    """Beads whose worktree path still exists on disk are not unclaimed."""
+    wt_path = tmp_path / "wt-bead-1"
+    wt_path.mkdir()  # worktree exists
+
+    state = {
+        "bead-1": {
+            "state": "Solving",
+            "worktree_path": str(wt_path),
+            "config": {"id": "bead-1"},
+        },
+    }
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps(state))
+
+    config = WhittlerConfig(
+        repo_root=str(tmp_path),
+        state_file=str(state_file),
+        worktree_base=".worktrees",
+        lock_file=str(tmp_path / "lock"),
+    )
+
+    mock_unclaim = AsyncMock(return_value=True)
+
+    with (
+        patch("whittler.cli.git.cleanup_stale_worktrees", AsyncMock(return_value=[])),
+        patch("whittler.cli.ContainerManager") as MockCM,
+        patch("whittler.cli.beads.unclaim", mock_unclaim),
+        patch("whittler.cli._resolve_config", return_value=config),
+    ):
+        MockCM.return_value.cleanup_orphans = AsyncMock(return_value=[])
+        args = make_cleanup_args()
+        result = cmd_cleanup(args)
+
+    assert result == 0
+    mock_unclaim.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Test: cleanup handles missing state file gracefully
+# ---------------------------------------------------------------------------
+
+def test_cleanup_no_state_file(tmp_path):
+    """Cleanup runs without error when the state file doesn't exist."""
+    config = WhittlerConfig(
+        repo_root=str(tmp_path),
+        state_file=str(tmp_path / "missing-state.json"),
+        worktree_base=".worktrees",
+        lock_file=str(tmp_path / "lock"),
+    )
+
+    with (
+        patch("whittler.cli.git.cleanup_stale_worktrees", AsyncMock(return_value=[])),
+        patch("whittler.cli.ContainerManager") as MockCM,
+        patch("whittler.cli._resolve_config", return_value=config),
+    ):
+        MockCM.return_value.cleanup_orphans = AsyncMock(return_value=[])
+        args = make_cleanup_args()
+        result = cmd_cleanup(args)
+
+    assert result == 0

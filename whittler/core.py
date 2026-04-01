@@ -144,6 +144,7 @@ class WhittlerConfig:
     poll_interval: int = 5
     agent_timeout: int = 900
     max_retries: int = 3
+    shutdown_timeout: int = 60  # seconds to wait for in-flight beads before force-cancelling
     container_image: str = "whittler-solver:latest"
     container_memory: str = "4g"
     container_cpu: int = 2
