@@ -4,3 +4,253 @@ Main orchestrator for Whittler.
 This module coordinates polling for beads, creating worktrees, spawning
 containers, and managing the complete workflow for processing work units.
 """
+
+import asyncio
+import fcntl
+import json
+import logging
+import os
+import signal
+import time
+
+from whittler.core import BeadConfig, BeadRecord, BeadState, WhittlerConfig
+from whittler import beads, git
+from whittler.containers import ContainerManager
+
+logger = logging.getLogger(__name__)
+
+
+class Orchestrator:
+    def __init__(self, config: WhittlerConfig):
+        self.config = config
+        self.logger = logging.getLogger(__name__)
+        self._semaphore = asyncio.Semaphore(config.max_lanes)
+        self._merge_lock = git._merge_lock  # shared lock from git module
+        self._container_mgr = ContainerManager(config)
+        self._state: dict[str, BeadRecord] = {}  # bead_id -> BeadRecord
+        self._shutdown = asyncio.Event()
+        self._lock_fd = None  # file descriptor for process lock
+
+    async def run(self) -> None:
+        """Main loop. Polls for beads and processes them in batches."""
+        # 1. Acquire process lock (fcntl.flock) on config.lock_file
+        lock_path = self.config.lock_file
+        self._lock_fd = open(lock_path, "w")
+        try:
+            fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            self._lock_fd.close()
+            self._lock_fd = None
+            raise RuntimeError(f"Another Whittler instance is running (lock: {lock_path})")
+
+        try:
+            # 2. Load state from config.state_file (crash recovery)
+            self._state = self._load_state()
+
+            # 3. Verify repo health
+            await git.verify_repo_health(self.config.repo_root)
+
+            # 4. Cleanup stale worktrees and orphan containers
+            await git.cleanup_stale_worktrees(self.config.repo_root, self.config.worktree_base)
+            await self._container_mgr.cleanup_orphans()
+
+            # 5. Loop until _shutdown
+            while not self._shutdown.is_set():
+                # a. Poll beads.ready
+                ready_beads = await beads.ready(self.config.repo_root)
+
+                # b. If no beads: sleep config.poll_interval, continue
+                if not ready_beads:
+                    try:
+                        await asyncio.wait_for(
+                            self._shutdown.wait(),
+                            timeout=self.config.poll_interval,
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+
+                # c. Dispatch tasks bounded by semaphore
+                async def _bounded(bead: BeadConfig) -> BeadRecord:
+                    async with self._semaphore:
+                        return await self._process_bead_inner(bead)
+
+                tasks = [asyncio.create_task(_bounded(bead)) for bead in ready_beads]
+
+                # d. await gather
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                # e. Log results
+                for bead, result in zip(ready_beads, results):
+                    if isinstance(result, Exception):
+                        self.logger.error(
+                            "Task for bead %s raised exception: %s", bead.id, result
+                        )
+                    else:
+                        self.logger.info(
+                            "Bead %s completed with outcome: %s",
+                            bead.id,
+                            result.outcome if isinstance(result, BeadRecord) else "unknown",
+                        )
+
+                # f. Brief pause before next poll
+                if not self._shutdown.is_set():
+                    try:
+                        await asyncio.wait_for(self._shutdown.wait(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        pass
+
+        finally:
+            # 6. Release lock on shutdown
+            if self._lock_fd is not None:
+                try:
+                    fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+                self._lock_fd.close()
+                self._lock_fd = None
+
+    async def _process_bead_inner(self, bead: BeadConfig) -> BeadRecord:
+        """Inner implementation of process_bead without semaphore acquisition."""
+        record = BeadRecord(
+            config=bead,
+            state=BeadState.Ready,
+            branch="",
+            worktree_path="",
+            container_id="",
+        )
+
+        # 1. Claim bead
+        claimed = await beads.claim(bead.id, self.config.repo_root)
+        if not claimed:
+            record.state = BeadState.Failed
+            record.outcome = "claim_failed"
+            return record
+
+        record.state = BeadState.Claimed
+        record.claimed_at = time.time()
+
+        try:
+            # 2. Create worktree
+            worktree_path, branch = await git.create_worktree(
+                bead.id, self.config.repo_root, self.config.worktree_base
+            )
+            record.branch = branch
+            record.worktree_path = worktree_path
+
+            # 3. Save state (crash recovery)
+            record.state = BeadState.Solving
+            self._state[bead.id] = record
+            self._save_state()
+
+            # 4. Spawn container
+            container_id = await self._container_mgr.spawn(bead, worktree_path)
+            record.container_id = container_id
+
+            # 5. Wait for container
+            exit_code = await self._container_mgr.wait(container_id, self.config.agent_timeout)
+
+            if exit_code == 0:
+                # 6a. Success path
+                committed = await git.commit_worktree(worktree_path, bead.id, bead.description)
+                if committed:
+                    record.state = BeadState.Merging
+                    self._save_state()
+
+                    async with self._merge_lock:
+                        merged, changed_files = await git.merge_to_main(
+                            branch, bead.id, bead.description, self.config.repo_root
+                        )
+
+                    if merged:
+                        record.state = BeadState.Closed
+                        record.outcome = "merged"
+                        record.completed_at = time.time()
+                        await git.remove_worktree(worktree_path, branch, self.config.repo_root)
+                        await beads.close(bead.id, self.config.repo_root)
+                        await beads.feedback(bead.id, bead.description, changed_files, self.config.repo_root)
+                    else:
+                        # Merge conflict — preserve worktree for human review
+                        record.state = BeadState.Failed
+                        record.outcome = "conflict"
+                        self.logger.error(
+                            "Merge conflict for bead %s, branch %s preserved for review",
+                            bead.id, branch
+                        )
+                else:
+                    # Nothing to commit (agent made no changes)
+                    record.state = BeadState.Failed
+                    record.outcome = "no_changes"
+                    await beads.unclaim(bead.id, self.config.repo_root)
+                    await git.remove_worktree(worktree_path, branch, self.config.repo_root)
+
+            elif exit_code == -1:
+                # Timeout
+                logs = await self._container_mgr.logs(container_id)
+                self.logger.error("Bead %s timed out. Last logs:\n%s", bead.id, logs[-2000:])
+                record.state = BeadState.Failed
+                record.outcome = "timeout"
+                record.errors.append(f"Container timed out after {self.config.agent_timeout}s")
+                await beads.unclaim(bead.id, self.config.repo_root)
+                await git.remove_worktree(worktree_path, branch, self.config.repo_root)
+
+            else:
+                # Agent failure (exit_code == 1 or other non-zero)
+                logs = await self._container_mgr.logs(container_id)
+                self.logger.error("Bead %s failed (exit %d). Logs:\n%s", bead.id, exit_code, logs[-2000:])
+                record.state = BeadState.Failed
+                record.outcome = "agent_failed"
+                record.errors.append(f"Container exited {exit_code}")
+                await beads.unclaim(bead.id, self.config.repo_root)
+                await git.remove_worktree(worktree_path, branch, self.config.repo_root)
+
+        except Exception as e:
+            self.logger.exception("Unexpected error processing bead %s", bead.id)
+            record.state = BeadState.Failed
+            record.outcome = "error"
+            record.errors.append(str(e))
+            # Best-effort cleanup
+            if record.container_id:
+                await self._container_mgr.kill(record.container_id)
+            if record.worktree_path:
+                await git.remove_worktree(record.worktree_path, record.branch, self.config.repo_root)
+
+        finally:
+            if record.container_id:
+                await self._container_mgr.cleanup(record.container_id)
+            # Remove from in-flight state
+            self._state.pop(bead.id, None)
+            self._save_state()
+
+        return record
+
+    async def process_bead(self, bead: BeadConfig) -> BeadRecord:
+        """Full lifecycle for one bead."""
+        async with self._semaphore:
+            return await self._process_bead_inner(bead)
+
+    def handle_signal(self, sig):
+        """Set shutdown event. Current batch finishes, no new beads claimed."""
+        self.logger.info("Received signal %s, initiating graceful shutdown", sig)
+        self._shutdown.set()
+
+    def _save_state(self):
+        """Persist in-flight bead records to state file."""
+        state_data = {k: v.to_dict() for k, v in self._state.items()}
+        try:
+            with open(self.config.state_file, "w") as f:
+                json.dump(state_data, f, indent=2)
+        except OSError as e:
+            self.logger.warning("Failed to save state: %s", e)
+
+    def _load_state(self) -> dict[str, BeadRecord]:
+        """Load state from file for crash recovery."""
+        try:
+            with open(self.config.state_file) as f:
+                data = json.load(f)
+            return {k: BeadRecord.from_dict(v) for k, v in data.items()}
+        except FileNotFoundError:
+            return {}
+        except (json.JSONDecodeError, KeyError) as e:
+            self.logger.warning("Could not load state file: %s", e)
+            return {}
