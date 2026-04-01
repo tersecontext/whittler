@@ -10,7 +10,7 @@ import pytest
 from beads_mcp.bd_client import BdError
 from beads_mcp.models import Issue
 
-from whittler.beads import ready, claim, close, unclaim, feedback
+from whittler.beads import ready, claim, close, unclaim, feedback, update_status
 from whittler.core import BeadConfig
 
 
@@ -256,6 +256,46 @@ class TestUnclaim:
             result = await unclaim("ISS-1", "/repo", timeout=60)
 
             assert result is True
+
+
+# ---------------------------------------------------------------------------
+# Tests for update_status()
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateStatus:
+    @pytest.mark.asyncio
+    async def test_update_status_success(self):
+        """update_status() should return True when update succeeds."""
+        with patch("whittler.beads.BdCliClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.update = AsyncMock()
+            mock_client_class.return_value = mock_client
+
+            result = await update_status("ISS-1", "deferred", "/repo")
+
+            assert result is True
+            mock_client.update.assert_called_once()
+            # Check the params passed
+            call_args = mock_client.update.call_args
+            assert call_args[0][0].issue_id == "ISS-1"
+            assert call_args[0][0].status == "deferred"
+
+    @pytest.mark.asyncio
+    async def test_update_status_failure(self):
+        """update_status() should return False on BdError and log a warning."""
+        with patch("whittler.beads.BdCliClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.update = AsyncMock(side_effect=BdError("Issue not found"))
+            mock_client_class.return_value = mock_client
+
+            with patch("whittler.beads.logger") as mock_logger:
+                result = await update_status("ISS-1", "deferred", "/repo")
+
+                assert result is False
+                mock_logger.warning.assert_called_once()
+                assert "ISS-1" in str(mock_logger.warning.call_args)
+                assert "deferred" in str(mock_logger.warning.call_args)
 
 
 # ---------------------------------------------------------------------------
