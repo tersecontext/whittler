@@ -35,7 +35,21 @@ cd whittler
 pip install -e .
 ```
 
-You also need the `beads-mcp` package from your local beads installation. The path in `pyproject.toml` points to the Go module cache by default — update it if your beads installation is elsewhere.
+You also need the `beads-mcp` package from your local [beads](https://github.com/steveyegge/beads) installation:
+
+```bash
+# 1. Install beads (provides bd CLI and beads-mcp)
+go install github.com/steveyegge/beads/cmd/bd@latest
+
+# 2. Find your beads-mcp path (Go module cache)
+BEADS_VERSION=v0.59.0
+BEADS_MCP_PATH=$(go env GOPATH)/pkg/mod/github.com/steveyegge/beads@${BEADS_VERSION}/integrations/beads-mcp
+
+# 3. Update pyproject.toml to point to that path, then install
+pip install -e .
+```
+
+If `go env GOPATH` is empty, it defaults to `~/go`. Verify with `bd --version` after install.
 
 ## Quick Start
 

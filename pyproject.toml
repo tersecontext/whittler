@@ -14,9 +14,12 @@ authors = [{ name = "Whittler Contributors" }]
 dependencies = [
     "pyyaml",
     "docker",
-    # NOTE: beads-mcp is sourced from the local Go module cache on this machine.
-    # Install beads (https://github.com/steveyegge/beads) to populate this path,
-    # or update this path to point to your local beads checkout.
+    # beads-mcp is installed from your local beads checkout.
+    # Before running `pip install -e .`, install beads and find the path:
+    #   go install github.com/steveyegge/beads/cmd/bd@latest
+    #   export BEADS_MCP_PATH=$(go env GOPATH)/pkg/mod/github.com/steveyegge/beads@v0.59.0/integrations/beads-mcp
+    # Then update the path below to match your local Go module cache, and run: pip install -e .
+    # If go env GOPATH is empty, it defaults to ~/go.
     "beads-mcp @ file:///home/kmcbeth/go/pkg/mod/github.com/steveyegge/beads@v0.59.0/integrations/beads-mcp",
 ]
 
