@@ -46,6 +46,8 @@ def _make_bead_config() -> BeadConfig:
         description="Do something",
         design="## Design",
         notes="Important note",
+        body="Long-form description of the work.",
+        acceptance_criteria="All tests pass.",
     )
 
 
@@ -76,23 +78,29 @@ class TestBeadConfig:
             "description": "Implement X",
             "design": "Use approach Y",
             "notes": "Be careful about Z",
+            "body": "Longer description of X.",
+            "acceptance_criteria": "X works correctly.",
         }
         config = BeadConfig.from_dict(original)
         assert config.to_dict() == original
 
     def test_round_trip_missing_optional(self):
-        """from_dict tolerates missing design/notes (they default to '')."""
+        """from_dict tolerates missing optional fields (they default to '')."""
         minimal = {"id": "ISS-1", "description": "A task"}
         config = BeadConfig.from_dict(minimal)
         assert config.id == "ISS-1"
         assert config.description == "A task"
         assert config.design == ""
         assert config.notes == ""
+        assert config.body == ""
+        assert config.acceptance_criteria == ""
         assert config.to_dict() == {
             "id": "ISS-1",
             "description": "A task",
             "design": "",
             "notes": "",
+            "body": "",
+            "acceptance_criteria": "",
         }
 
     def test_from_issue_maps_title_to_description(self):
@@ -120,6 +128,21 @@ class TestBeadConfig:
         issue = _make_issue(notes=None)
         config = BeadConfig.from_issue(issue)
         assert config.notes == ""
+
+    def test_from_issue_maps_body_from_description(self):
+        issue = _make_issue(description="Detailed prose about the work.")
+        config = BeadConfig.from_issue(issue)
+        assert config.body == "Detailed prose about the work."
+
+    def test_from_issue_maps_acceptance_criteria(self):
+        issue = _make_issue(acceptance_criteria="All unit tests pass.")
+        config = BeadConfig.from_issue(issue)
+        assert config.acceptance_criteria == "All unit tests pass."
+
+    def test_from_issue_none_acceptance_criteria_becomes_empty_string(self):
+        issue = _make_issue(acceptance_criteria=None)
+        config = BeadConfig.from_issue(issue)
+        assert config.acceptance_criteria == ""
 
 
 # ---------------------------------------------------------------------------
@@ -281,3 +304,9 @@ class TestWhittlerConfig:
             cfg = WhittlerConfig.from_env()
         assert cfg.agent_timeout == 1800
         assert isinstance(cfg.agent_timeout, int)
+
+    def test_from_env_raises_on_bad_int(self):
+        """from_env() raises ValueError when an env var cannot be coerced to the target type."""
+        with patch.dict(os.environ, {"WHITTLER_MAX_LANES": "notanumber"}, clear=False):
+            with pytest.raises(ValueError, match="WHITTLER_MAX_LANES=notanumber: cannot convert to int"):
+                WhittlerConfig.from_env()

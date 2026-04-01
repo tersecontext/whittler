@@ -1,53 +1,45 @@
-# Whittler Configuration Example
-# Copy this file to whittler.yaml and customize for your environment
+# Whittler configuration example
+# Copy to whittler.yaml and edit as needed.
 
-# Beads CLI configuration
-beads:
-  # Command to poll for ready beads
-  command: "bd"
-  # Poll interval in seconds
-  poll_interval: 5
-  # Maximum number of concurrent beads to process
-  max_concurrent: 3
+# Path to the root of the git repository Whittler will manage.
+repo_root: .
 
-# Git configuration
-git:
-  # Main branch name
-  main_branch: "main"
-  # Base directory for worktrees
-  worktree_base: ".claude/worktrees"
-  # Author name for commits
-  author_name: "Whittler"
-  # Author email for commits
-  author_email: "whittler@anthropic.com"
+# Maximum number of beads (work items) to process concurrently.
+max_lanes: 2
 
-# Docker configuration
-docker:
-  # Docker image to use for solver agents
-  image: "whittler-solver:latest"
-  # Docker network for containers
-  network: "bridge"
-  # Timeout for container execution (seconds)
-  timeout: 3600
-  # Environment variables to pass to containers
-  env:
-    CLAUDE_API_KEY: "${CLAUDE_API_KEY}"
-    LOG_LEVEL: "INFO"
+# How often (in seconds) to poll for new ready beads.
+poll_interval: 5
 
-# Logging configuration
-logging:
-  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
-  level: "INFO"
-  # Log file path (optional)
-  file: null
-  # Log format
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+# Maximum seconds a solver agent container may run before being killed.
+agent_timeout: 900
 
-# Orchestrator configuration
-orchestrator:
-  # Enable dry-run mode (no actual changes)
-  dry_run: false
-  # Retry failed beads
-  max_retries: 3
-  # Keep worktrees after completion for debugging
-  keep_worktrees: false
+# Number of times to retry a failed bead before marking it as permanently failed.
+max_retries: 3
+
+# Docker image to use when launching solver agent containers.
+container_image: whittler-solver:latest
+
+# Memory limit passed to the solver container (Docker --memory format, e.g. 4g, 512m).
+container_memory: 4g
+
+# Number of CPUs allocated to each solver container (Docker --cpus format).
+container_cpu: 2
+
+# Base directory under which per-bead git worktrees are created.
+worktree_base: .worktrees
+
+# Shell command to run after a bead is merged to validate the repository.
+# Leave empty to skip post-merge validation.
+validation_command: ""
+
+# Name of the environment variable that holds the Anthropic API key.
+api_key_env: ANTHROPIC_API_KEY
+
+# Path to the Whittler log file.
+log_file: whittler.log
+
+# Path to the JSON file used to persist orchestrator state across restarts.
+state_file: .whittler-state.json
+
+# Path to the lock file used to prevent multiple Whittler instances from running simultaneously.
+lock_file: .whittler.lock

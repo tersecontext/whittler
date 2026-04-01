@@ -24,21 +24,27 @@ class BeadConfig:
     description: str
     design: str
     notes: str
+    body: str = ""
+    acceptance_criteria: str = ""
 
     @classmethod
     def from_issue(cls, issue: Issue) -> BeadConfig:
         """Create a BeadConfig from a beads_mcp Issue.
 
         Maps:
-          - description <- issue.title  (the short summary of the work)
-          - design      <- issue.design (may be None → "")
-          - notes       <- issue.notes  (may be None → "")
+          - description        <- issue.title              (the short summary of the work)
+          - design             <- issue.design             (may be None → "")
+          - notes              <- issue.notes              (may be None → "")
+          - body               <- issue.description        (the long-form prose description)
+          - acceptance_criteria <- issue.acceptance_criteria (what "done" looks like; may be None → "")
         """
         return cls(
             id=issue.id,
             description=issue.title,
             design=issue.design or "",
             notes=issue.notes or "",
+            body=issue.description or "",
+            acceptance_criteria=issue.acceptance_criteria or "",
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -48,6 +54,8 @@ class BeadConfig:
             "description": self.description,
             "design": self.design,
             "notes": self.notes,
+            "body": self.body,
+            "acceptance_criteria": self.acceptance_criteria,
         }
 
     @classmethod
@@ -58,6 +66,8 @@ class BeadConfig:
             description=d["description"],
             design=d.get("design", ""),
             notes=d.get("notes", ""),
+            body=d.get("body", ""),
+            acceptance_criteria=d.get("acceptance_criteria", ""),
         )
 
 
@@ -86,6 +96,9 @@ class BeadRecord:
     claimed_at: float = 0.0
     completed_at: float = 0.0
     outcome: str = ""  # "merged", "conflict", "agent_failed", "timeout"
+
+    def __post_init__(self) -> None:
+        self.errors = list(self.errors)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a plain dictionary for state persistence."""
@@ -178,6 +191,8 @@ class WhittlerConfig:
             try:
                 setattr(instance, fobj.name, target_type(raw))
             except (ValueError, TypeError):
-                setattr(instance, fobj.name, raw)
+                raise ValueError(
+                    f"{env_key}={raw}: cannot convert to {target_type.__name__}"
+                ) from None
 
         return instance
