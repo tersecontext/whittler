@@ -44,17 +44,7 @@ class ContainerManager:
             ) from exc
 
         self.config = config
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _get_loop(self) -> asyncio.AbstractEventLoop:
-        return asyncio.get_event_loop()
-
-    async def _run_in_executor(self, fn: Any, *args: Any) -> Any:
-        loop = self._get_loop()
-        return await loop.run_in_executor(None, fn, *args)
+        self._temp_files: dict[str, str] = {}  # Maps container_id -> temp_file_path
 
     # ------------------------------------------------------------------
     # Public async interface
@@ -102,7 +92,8 @@ class ContainerManager:
                 auto_remove=False,
             )
 
-        container = await self._get_loop().run_in_executor(None, _run)
+        container = await asyncio.get_running_loop().run_in_executor(None, _run)
+        self._temp_files[container.id] = bead_config_path
         return container.id
 
     async def wait(self, container_id: str, timeout: int) -> int:
@@ -113,7 +104,7 @@ class ContainerManager:
 
         try:
             result = await asyncio.wait_for(
-                self._get_loop().run_in_executor(None, _wait),
+                asyncio.get_running_loop().run_in_executor(None, _wait),
                 timeout=timeout,
             )
             return result["StatusCode"]
@@ -128,7 +119,7 @@ class ContainerManager:
             c = self.client.containers.get(container_id)
             return c.logs(stdout=True, stderr=True)
 
-        raw: bytes = await self._get_loop().run_in_executor(None, _logs)
+        raw: bytes = await asyncio.get_running_loop().run_in_executor(None, _logs)
         text = raw.decode("utf-8", errors="replace")
         return text[-10000:]
 
@@ -141,7 +132,7 @@ class ContainerManager:
             except (docker.errors.NotFound, docker.errors.APIError):
                 pass
 
-        await self._get_loop().run_in_executor(None, _kill)
+        await asyncio.get_running_loop().run_in_executor(None, _kill)
 
     async def cleanup(self, container_id: str) -> None:
         """Remove container. Best-effort."""
@@ -152,14 +143,19 @@ class ContainerManager:
             except (docker.errors.NotFound, docker.errors.APIError):
                 pass
 
-        await self._get_loop().run_in_executor(None, _remove)
+        await asyncio.get_running_loop().run_in_executor(None, _remove)
+
+        # Clean up temp file if one was created for this container
+        tmp = self._temp_files.pop(container_id, None)
+        if tmp and os.path.exists(tmp):
+            os.unlink(tmp)
 
     async def cleanup_orphans(self, label: str = "whittler") -> int:
-        """Find and remove stopped containers with whittler=true label. Returns count."""
+        """Find and remove stopped containers with label=true. Returns count."""
         def _cleanup() -> int:
             containers = self.client.containers.list(
                 all=True,
-                filters={"label": "whittler=true", "status": "exited"},
+                filters={"label": f"{label}=true", "status": "exited"},
             )
             count = 0
             for c in containers:
@@ -170,4 +166,4 @@ class ContainerManager:
                     pass
             return count
 
-        return await self._get_loop().run_in_executor(None, _cleanup)
+        return await asyncio.get_running_loop().run_in_executor(None, _cleanup)
