@@ -111,6 +111,30 @@ async def unclaim(bead_id: str, repo_root: str, timeout: int = 30) -> bool:
         return False
 
 
+async def update_status(bead_id: str, status: str, repo_root: str, timeout: int = 30) -> bool:
+    """Update a bead's status directly. Used to quarantine repeatedly-failing beads.
+
+    Common values: "deferred", "open", "in_progress".
+    Returns True on success, False on BdError (best-effort).
+
+    Args:
+        bead_id: ID of the bead to update
+        status: New status value (e.g., "deferred", "open", "in_progress")
+        repo_root: Root directory of the repository for bd commands
+        timeout: Timeout in seconds (currently unused; beads_mcp handles subprocess timeout)
+
+    Returns:
+        True if update succeeded, False on BdError
+    """
+    try:
+        client = BdCliClient(working_dir=repo_root)
+        await client.update(UpdateIssueParams(issue_id=bead_id, status=status))
+        return True
+    except BdError as e:
+        logger.warning(f"Failed to update status of bead {bead_id} to {status}: {e}")
+        return False
+
+
 async def feedback(
     bead_id: str,
     predicted: str,

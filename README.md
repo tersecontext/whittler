@@ -16,7 +16,7 @@ user request → examine → fracture → beads → whittler → working code on
 4. **Solve** — A Docker container mounts the worktree at `/work`, reads `/bead.json`, writes `CLAUDE.md` from the bead's design field, and runs `claude -p` with the task prompt
 5. **Validate** — The solver runs your configured `validation_command` (tests, lint, build); on failure it reads the errors, fixes them, and retries up to `max_retries` times
 6. **Merge** — On exit 0, Whittler commits the worktree, acquires a merge lock, merges `--no-ff` to `main`, and closes the bead
-7. **Fail safely** — On exit 1 or timeout, Whittler preserves the worktree for inspection and unclams the bead
+7. **Fail safely** — On exit 1 or timeout, Whittler unclams the bead so it can be retried. After `max_retries` consecutive failures the bead is moved to `deferred` instead of re-queued indefinitely
 
 Multiple beads are processed concurrently up to `max_lanes`.
 
@@ -58,7 +58,7 @@ whittler run
 ```
 whittler run [options]    Start the orchestrator loop
 whittler status           Show in-flight and recently completed beads
-whittler cleanup          Remove stale worktrees and orphaned containers
+whittler cleanup          Remove stale worktrees, orphaned containers, and unclaim orphaned beads
 ```
 
 ### `whittler run` options
@@ -71,7 +71,7 @@ whittler cleanup          Remove stale worktrees and orphaned containers
 | `--poll-interval N` | 5 | Seconds between polls |
 | `--image NAME` | `whittler-solver:latest` | Solver container image |
 | `--timeout N` | 900 | Agent timeout in seconds |
-| `--max-retries N` | 3 | Max solver retries |
+| `--max-retries N` | 3 | Failures before a bead is quarantined to `deferred` |
 | `--validation-cmd CMD` | _(none)_ | Command to validate after solve |
 | `--log-file PATH` | `whittler.log` | Log file location |
 | `--dry-run` | off | Log what would happen; don't claim or spawn |
@@ -82,6 +82,26 @@ whittler cleanup          Remove stale worktrees and orphaned containers
 All options can be set in `whittler.yaml`, as `WHITTLER_*` environment variables, or as CLI flags. Precedence: **CLI > env > config file > defaults**.
 
 See [`whittler.yaml.example`](whittler.yaml.example) for the full reference with comments.
+
+## Failure Handling
+
+### Automatic quarantine
+
+Beads that fail repeatedly (agent exit 1, timeout, or no changes made) are automatically quarantined after `max_retries` consecutive failures. Instead of looping forever, the bead's status is set to `deferred`. A human can then review the bead, update its design field, and reset it to `open`.
+
+### Graceful shutdown
+
+`Ctrl+C` (or `SIGTERM`) stops new beads from being claimed and waits for in-flight tasks to finish. If tasks have not finished within `shutdown_timeout` seconds (default 60), they are cancelled and their beads are unclaimed immediately.
+
+### Structured log events
+
+Every lifecycle transition emits a `WHITTLER_EVENT <json>` log line. These can be extracted with:
+
+```bash
+grep WHITTLER_EVENT whittler.log | sed 's/.*WHITTLER_EVENT //' | jq .
+```
+
+Event types: `claimed`, `solving`, `merged`, `conflict`, `failed`, `quarantined`, `error`.
 
 ## Solver Container Contract
 
@@ -95,7 +115,7 @@ Whittler works with any container image that follows this contract:
 | `WHITTLER_MAX_RETRIES` | Env var. How many validation attempts to make. |
 | `WHITTLER_VALIDATION_CMD` | Env var. Command to run to validate work. |
 | Exit 0 | Signal success. Whittler commits and merges. |
-| Exit non-0 | Signal failure. Whittler preserves worktree and unclames. |
+| Exit non-0 | Signal failure. Whittler unclams and retries up to `max_retries`. |
 
 `/bead.json` shape:
 
@@ -114,7 +134,9 @@ The default solver image (`docker/`) runs Claude Code with `--dangerously-skip-p
 
 ## Crash Recovery
 
-Whittler writes `.whittler-state.json` after each state transition. On restart it reads this file and detects orphaned worktrees and containers from the previous run. `whittler cleanup` can also be run manually after a crash.
+Whittler writes `.whittler-state.json` after each state transition. On restart it reads this file and detects orphaned worktrees and containers from the previous run.
+
+`whittler cleanup` can also be run manually after a crash. It removes stale worktrees, orphaned containers, and unclams any beads in `Claimed`/`Solving`/`Merging` state whose worktrees no longer exist — returning them to the ready queue.
 
 Only one Whittler instance may run per repo at a time (enforced by a `.whittler.lock` file lock).
 

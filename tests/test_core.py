@@ -230,6 +230,7 @@ class TestWhittlerConfig:
         assert cfg.poll_interval == 5
         assert cfg.agent_timeout == 900
         assert cfg.max_retries == 3
+        assert cfg.shutdown_timeout == 60
         assert cfg.container_image == "whittler-solver:latest"
         assert cfg.container_memory == "4g"
         assert cfg.container_cpu == 2

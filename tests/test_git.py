@@ -4,6 +4,7 @@ Tests for the git module.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import subprocess
@@ -199,7 +200,9 @@ async def test_merge_to_main_clean(repo_with_file):
         fh.write("x = 1\n")
     await git.commit_worktree(worktree_path, "10", "add feature")
 
-    async with git._merge_lock:
+    # Caller must hold a lock to serialize merges (orchestrator manages this).
+    merge_lock = asyncio.Lock()
+    async with merge_lock:
         success, changed_files = await git.merge_to_main(
             branch=branch_name,
             bead_id="10",
@@ -245,7 +248,9 @@ async def test_merge_to_main_conflict(repo_with_file):
         capture_output=True,
     )
 
-    async with git._merge_lock:
+    # Caller must hold a lock to serialize merges (orchestrator manages this).
+    merge_lock = asyncio.Lock()
+    async with merge_lock:
         success, changed_files = await git.merge_to_main(
             branch=branch_name,
             bead_id="11",
