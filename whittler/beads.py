@@ -4,9 +4,7 @@ This module handles interaction with the bd CLI tool to poll for, claim,
 and manage work units ("beads").
 """
 
-import asyncio
 import logging
-from typing import Optional
 
 from beads_mcp.bd_client import BdCliClient, BdError
 from beads_mcp.models import (
