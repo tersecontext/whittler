@@ -14,6 +14,7 @@ authors = [{ name = "Whittler Contributors" }]
 dependencies = [
     "pyyaml",
     "docker",
+    "beads-mcp @ file:///home/kmcbeth/go/pkg/mod/github.com/steveyegge/beads@v0.59.0/integrations/beads-mcp",
 ]
 
 [project.optional-dependencies]
