@@ -2,7 +2,7 @@
 # Mock bd CLI for integration testing.
 # Uses a temp file to track whether the test bead has been claimed.
 
-CLAIMED_FILE="/tmp/mock_bd_claimed_beads"
+CLAIMED_FILE="${MOCK_BD_STATE_FILE:-/tmp/mock_bd_claimed_beads}"
 
 BEAD_JSON='{
   "id": "test-bead-001",

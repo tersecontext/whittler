@@ -72,97 +72,96 @@ def test_full_loop(test_image, temp_repo):
     4. Assert: hello.txt exists in the repo on main
     5. Assert: commit message contains bead ID
     """
+    import shutil
     from whittler.core import WhittlerConfig
     from whittler.orchestrator import Orchestrator
     from whittler import beads, git
 
-    # Clean up any leftover claimed-bead tracking file from prior runs
-    claimed_file = "/tmp/mock_bd_claimed_beads"
-    if os.path.exists(claimed_file):
-        os.remove(claimed_file)
-
-    # Make mock_bd.sh available as "bd" in PATH
-    mock_bd_dir = tempfile.mkdtemp()
-    mock_bd_path = os.path.join(mock_bd_dir, "bd")
-    os.symlink(os.path.join(INTEGRATION_DIR, "mock_bd.sh"), mock_bd_path)
-    os.chmod(mock_bd_path, 0o755)
-
-    config = WhittlerConfig(
-        repo_root=temp_repo,
-        container_image=TEST_IMAGE,
-        max_lanes=1,
-        poll_interval=1,
-        agent_timeout=30,
-        worktree_base=".worktrees",
-        state_file=os.path.join(temp_repo, ".whittler-state.json"),
-        lock_file=os.path.join(temp_repo, ".whittler.lock"),
-    )
-
     original_path = os.environ.get("PATH", "")
-    os.environ["PATH"] = f"{mock_bd_dir}:{original_path}"
 
-    try:
-        async def run_one_cycle():
-            orch = Orchestrator(config)
+    # Use TemporaryDirectory context manager to eliminate resource leak
+    with tempfile.TemporaryDirectory() as mock_bd_dir:
+        # Make mock_bd.sh available as "bd" in PATH
+        mock_bd_path = os.path.join(mock_bd_dir, "bd")
+        os.symlink(os.path.join(INTEGRATION_DIR, "mock_bd.sh"), mock_bd_path)
+        os.chmod(mock_bd_path, 0o755)
 
-            # Perform startup cleanup (Orchestrator._startup_cleanup does not exist;
-            # call the constituent methods directly instead).
-            try:
-                await git.verify_repo_health(config.repo_root)
-            except Exception:
-                pass
-            try:
-                await git.cleanup_stale_worktrees(config.repo_root, config.worktree_base)
-            except Exception:
-                pass
-            try:
-                await orch._container_mgr.cleanup_orphans()
-            except Exception:
-                pass
+        # Use unique temp file for mock_bd claimed state (parallel-safe)
+        state_file = os.path.join(mock_bd_dir, "bd_state")
 
-            ready_beads = await beads.ready(config.repo_root)
-            if ready_beads:
-                tasks = [
-                    asyncio.create_task(orch.process_bead(bead))
-                    for bead in ready_beads
-                ]
-                records = await asyncio.gather(*tasks, return_exceptions=True)
-                return records
-            return []
-
-        records = asyncio.run(run_one_cycle())
-
-        # Assert the bead was processed successfully
-        assert len(records) == 1
-        record = records[0]
-        assert not isinstance(record, Exception), f"process_bead raised: {record}"
-        assert record.outcome == "merged", (
-            f"Expected merged, got {record.outcome}: {record.errors}"
+        config = WhittlerConfig(
+            repo_root=temp_repo,
+            container_image=TEST_IMAGE,
+            max_lanes=1,
+            poll_interval=1,
+            agent_timeout=30,
+            worktree_base=".worktrees",
+            state_file=os.path.join(temp_repo, ".whittler-state.json"),
+            lock_file=os.path.join(temp_repo, ".whittler.lock"),
         )
 
-        # Assert hello.txt exists on main branch
-        hello_path = os.path.join(temp_repo, "hello.txt")
-        assert os.path.exists(hello_path), "hello.txt should exist after merge"
-        with open(hello_path) as f:
-            content = f.read().strip()
-        assert "test-bead-001" in content, (
-            f"hello.txt should mention the bead id, got: {content}"
-        )
+        os.environ["PATH"] = f"{mock_bd_dir}:{original_path}"
+        os.environ["MOCK_BD_STATE_FILE"] = state_file
 
-        # Assert commit message contains bead ID
-        result = subprocess.run(
-            ["git", "-C", temp_repo, "log", "--oneline", "-3"],
-            capture_output=True,
-            text=True,
-        )
-        assert "test-bead-001" in result.stdout, (
-            f"Commit should mention bead id. Log: {result.stdout}"
-        )
+        try:
+            async def run_one_cycle():
+                orch = Orchestrator(config)
 
-    finally:
-        os.environ["PATH"] = original_path
-        import shutil
-        shutil.rmtree(mock_bd_dir, ignore_errors=True)
-        # Clean up claimed-bead tracking file
-        if os.path.exists(claimed_file):
-            os.remove(claimed_file)
+                # Perform startup cleanup (Orchestrator._startup_cleanup does not exist;
+                # call the constituent methods directly instead).
+                try:
+                    await git.verify_repo_health(config.repo_root)
+                except Exception:
+                    pass
+                try:
+                    await git.cleanup_stale_worktrees(config.repo_root, config.worktree_base)
+                except Exception:
+                    pass
+                try:
+                    await orch._container_mgr.cleanup_orphans()
+                except Exception:
+                    pass
+
+                ready_beads = await beads.ready(config.repo_root)
+                if ready_beads:
+                    tasks = [
+                        asyncio.create_task(orch.process_bead(bead))
+                        for bead in ready_beads
+                    ]
+                    records = await asyncio.gather(*tasks, return_exceptions=True)
+                    return records
+                return []
+
+            records = asyncio.run(run_one_cycle())
+
+            # Assert the bead was processed successfully
+            assert len(records) == 1
+            record = records[0]
+            assert not isinstance(record, Exception), f"process_bead raised: {record}"
+            assert record.outcome == "merged", (
+                f"Expected merged, got {record.outcome}: {record.errors}"
+            )
+
+            # Assert hello.txt exists on main branch
+            hello_path = os.path.join(temp_repo, "hello.txt")
+            assert os.path.exists(hello_path), "hello.txt should exist after merge"
+            with open(hello_path) as f:
+                content = f.read().strip()
+            assert "test-bead-001" in content, (
+                f"hello.txt should mention the bead id, got: {content}"
+            )
+
+            # Assert commit message contains bead ID
+            result = subprocess.run(
+                ["git", "-C", temp_repo, "log", "--oneline", "-3"],
+                capture_output=True,
+                text=True,
+            )
+            assert "test-bead-001" in result.stdout, (
+                f"Commit should mention bead id. Log: {result.stdout}"
+            )
+
+        finally:
+            os.environ["PATH"] = original_path
+            if "MOCK_BD_STATE_FILE" in os.environ:
+                del os.environ["MOCK_BD_STATE_FILE"]
