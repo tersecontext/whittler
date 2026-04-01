@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 
 logger = logging.getLogger(__name__)
 
@@ -33,30 +34,31 @@ async def _run_git(
         timeout: Seconds before asyncio.TimeoutError is raised.
         check: If True and returncode != 0, raise RuntimeError.
     """
-    proc = await asyncio.wait_for(
-        asyncio.create_subprocess_exec(
+    async def _run() -> tuple[int, str, str]:
+        proc = await asyncio.create_subprocess_exec(
             "git",
             *args,
             cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-        ),
-        timeout=timeout,
-    )
-    stdout_bytes, stderr_bytes = await asyncio.wait_for(
-        proc.communicate(), timeout=timeout
-    )
-    stdout = stdout_bytes.decode().strip()
-    stderr = stderr_bytes.decode().strip()
-    returncode = proc.returncode
-
-    if check and returncode != 0:
-        cmd = "git " + " ".join(args)
-        raise RuntimeError(
-            f"git command failed (rc={returncode}): {cmd!r}\nstderr: {stderr}"
         )
+        stdout_bytes, stderr_bytes = await proc.communicate()
+        stdout = stdout_bytes.decode().strip()
+        stderr = stderr_bytes.decode().strip()
+        returncode = proc.returncode
 
-    return returncode, stdout, stderr
+        if check and returncode != 0:
+            cmd = "git " + " ".join(args)
+            raise RuntimeError(
+                f"git command failed (rc={returncode}): {cmd!r}\nstderr: {stderr}"
+            )
+
+        return returncode or 0, stdout, stderr
+
+    try:
+        return await asyncio.wait_for(_run(), timeout=timeout)
+    except asyncio.TimeoutError:
+        raise RuntimeError(f"git {' '.join(args)} timed out after {timeout}s")
 
 
 async def verify_repo_health(repo_root: str) -> None:
@@ -455,7 +457,6 @@ async def cleanup_stale_worktrees(
 
         # If the directory still exists after git worktree remove, nuke it.
         if os.path.isdir(full_path):
-            import shutil
             try:
                 shutil.rmtree(full_path)
             except Exception as exc:

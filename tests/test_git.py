@@ -82,7 +82,7 @@ async def test_verify_repo_health_passes_on_clean_repo(repo):
 # 2 -------------------------------------------------------------------------
 
 async def test_verify_repo_health_fails_on_dirty_repo(repo):
-    # Write an untracked (unstaged) file to make the working tree dirty.
+    # Write and stage a file (staged file) to make the working tree dirty.
     dirty_file = os.path.join(repo, "dirty.txt")
     with open(dirty_file, "w") as fh:
         fh.write("dirty\n")
@@ -313,3 +313,39 @@ async def test_cleanup_stale_worktrees(repo_with_file):
         ["git", "-C", repo_with_file, "branch", "-D", branch_name],
         capture_output=True,
     )
+
+
+# 12 ------------------------------------------------------------------------
+
+async def test_commit_worktree_removes_claude_md(repo_with_file):
+    worktree_path, branch_name = await git.create_worktree(
+        bead_id="50",
+        repo_root=repo_with_file,
+        worktree_base=".worktrees",
+    )
+
+    # Write a real file and a CLAUDE.md executor artifact.
+    with open(os.path.join(worktree_path, "output.py"), "w") as fh:
+        fh.write("# output\n")
+    with open(os.path.join(worktree_path, "CLAUDE.md"), "w") as fh:
+        fh.write("# executor artifact\n")
+
+    result = await git.commit_worktree(
+        worktree_path=worktree_path,
+        bead_id="50",
+        description="test claude md removal",
+    )
+    assert result is True
+
+    # Verify CLAUDE.md is not in the committed tree.
+    ls_tree = subprocess.run(
+        ["git", "-C", worktree_path, "ls-tree", "HEAD", "--name-only"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    committed_files = ls_tree.stdout.splitlines()
+    assert "CLAUDE.md" not in committed_files
+    assert "output.py" in committed_files
+
+    await git.remove_worktree(worktree_path, branch_name, repo_with_file)
