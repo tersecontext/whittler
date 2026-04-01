@@ -3,6 +3,7 @@ Tests for the orchestrator module.
 """
 
 import asyncio
+import signal
 from unittest.mock import AsyncMock, MagicMock, patch, call
 import pytest
 
@@ -300,7 +301,116 @@ async def test_concurrency_respects_max_lanes():
 
 def test_handle_signal():
     orch = make_orchestrator()
-    import signal as signal_module
     assert not orch._shutdown.is_set()
-    orch.handle_signal(signal_module.SIGTERM)
+    mock_loop = MagicMock()
+    with patch("asyncio.get_running_loop", return_value=mock_loop):
+        orch.handle_signal(signal.SIGTERM)
     assert orch._shutdown.is_set()
+
+
+# ---------------------------------------------------------------------------
+# Test 9: attempt counter increments and quarantines
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_attempts_increment_and_quarantine():
+    """After max_retries agent_failed attempts, bead is quarantined, not unclaimed."""
+    config = make_config(max_retries=2)
+    orch = make_orchestrator(config)
+    bead = make_bead()
+
+    orch._container_mgr.spawn = AsyncMock(return_value="ctr-1")
+    orch._container_mgr.wait = AsyncMock(return_value=1)  # agent_failed
+    orch._container_mgr.cleanup = AsyncMock()
+    orch._container_mgr.logs = AsyncMock(return_value="error")
+
+    mock_unclaim = AsyncMock(return_value=True)
+    mock_update_status = AsyncMock(return_value=True)
+
+    with (
+        patch("whittler.orchestrator.beads.claim", AsyncMock(return_value=True)),
+        patch("whittler.orchestrator.beads.unclaim", mock_unclaim),
+        patch("whittler.orchestrator.beads.update_status", mock_update_status),
+        patch(
+            "whittler.orchestrator.git.create_worktree",
+            AsyncMock(return_value=("/wt/bead-1", "bead/bead-1")),
+        ),
+        patch("whittler.orchestrator.git.remove_worktree", AsyncMock()),
+        patch.object(orch, "_save_state"),
+    ):
+        # First attempt
+        record1 = await orch.process_bead(bead)
+        assert record1.attempts == 1
+        assert mock_unclaim.call_count == 1
+        mock_update_status.assert_not_called()
+        mock_unclaim.reset_mock()
+
+        # Second attempt — hits max_retries
+        record2 = await orch.process_bead(bead)
+        assert record2.attempts == 2
+        mock_update_status.assert_called_once_with(bead.id, "deferred", orch.config.repo_root)
+        mock_unclaim.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Test 10: _save_state retries on first OSError and raises on second
+# ---------------------------------------------------------------------------
+
+def test_save_state_retries_and_raises():
+    orch = make_orchestrator()
+    orch._state = {}
+
+    call_count = 0
+    def failing_open(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        raise OSError("disk full")
+
+    with patch("builtins.open", side_effect=failing_open):
+        with pytest.raises(OSError):
+            orch._save_state()
+
+    assert call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Test 11: handle_signal schedules force shutdown
+# ---------------------------------------------------------------------------
+
+def test_handle_signal_schedules_force_shutdown():
+    orch = make_orchestrator()
+    mock_loop = MagicMock()
+    with patch("asyncio.get_running_loop", return_value=mock_loop):
+        orch.handle_signal(signal.SIGTERM)
+    assert orch._shutdown.is_set()
+    mock_loop.call_later.assert_called_once_with(
+        orch.config.shutdown_timeout, orch._force_shutdown
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 12: CancelledError triggers unclaim
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_cancelled_error_unclames_bead():
+    orch = make_orchestrator()
+    bead = make_bead()
+    mock_unclaim = AsyncMock(return_value=True)
+
+    async def raise_cancelled(*args, **kwargs):
+        raise asyncio.CancelledError()
+
+    with (
+        patch("whittler.orchestrator.beads.claim", AsyncMock(return_value=True)),
+        patch("whittler.orchestrator.beads.unclaim", mock_unclaim),
+        patch(
+            "whittler.orchestrator.git.create_worktree",
+            side_effect=raise_cancelled,
+        ),
+        patch.object(orch, "_save_state"),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await orch._process_bead_inner(bead)
+
+    mock_unclaim.assert_called_once_with(bead.id, orch.config.repo_root)
