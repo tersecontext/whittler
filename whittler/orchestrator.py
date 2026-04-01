@@ -25,7 +25,7 @@ class Orchestrator:
         self.config = config
         self.logger = logging.getLogger(__name__)
         self._semaphore = asyncio.Semaphore(config.max_lanes)
-        self._merge_lock = git._merge_lock  # shared lock from git module
+        self._merge_lock = asyncio.Lock()  # serializes merges; one merge at a time
         self._container_mgr = ContainerManager(config)
         self._state: dict[str, BeadRecord] = {}  # bead_id -> BeadRecord
         self._shutdown = asyncio.Event()
