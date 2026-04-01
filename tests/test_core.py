@@ -236,7 +236,6 @@ class TestWhittlerConfig:
         assert cfg.container_cpu == 2
         assert cfg.worktree_base == ".worktrees"
         assert cfg.validation_command == ""
-        assert cfg.api_key_env == "ANTHROPIC_API_KEY"
         assert cfg.log_file == "whittler.log"
         assert cfg.state_file == ".whittler-state.json"
         assert cfg.lock_file == ".whittler.lock"

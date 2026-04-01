@@ -32,9 +32,6 @@ worktree_base: .worktrees
 # Leave empty to skip post-merge validation.
 validation_command: ""
 
-# Name of the environment variable that holds the Anthropic API key.
-api_key_env: ANTHROPIC_API_KEY
-
 # Path to the Whittler log file.
 log_file: whittler.log
 

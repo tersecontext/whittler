@@ -150,7 +150,6 @@ class WhittlerConfig:
     container_cpu: int = 2
     worktree_base: str = ".worktrees"
     validation_command: str = ""
-    api_key_env: str = "ANTHROPIC_API_KEY"
     log_file: str = "whittler.log"
     state_file: str = ".whittler-state.json"
     lock_file: str = ".whittler.lock"

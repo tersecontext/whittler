@@ -70,12 +70,13 @@ class ContainerManager:
         tmp.close()
         bead_config_path = tmp.name
 
+        claude_config_dir = os.path.expanduser("~/.claude")
         volumes = {
             worktree_path: {"bind": "/work", "mode": "rw"},
             bead_config_path: {"bind": "/bead.json", "mode": "ro"},
+            claude_config_dir: {"bind": "/root/.claude", "mode": "ro"},
         }
         environment = {
-            self.config.api_key_env: os.environ.get(self.config.api_key_env, ""),
             "WHITTLER_MAX_RETRIES": str(self.config.max_retries),
             "WHITTLER_VALIDATION_CMD": self.config.validation_command,
         }
