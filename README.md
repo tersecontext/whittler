@@ -20,6 +20,17 @@ user request → examine → fracture → beads → whittler → working code on
 
 Multiple beads are processed concurrently up to `max_lanes`.
 
+## Prerequisites
+
+| Requirement | Notes |
+|-------------|-------|
+| Python 3.11+ | `python --version` |
+| Go toolchain | Required to install `bd` and `beads-mcp`. `go version` |
+| [`bd` CLI + `beads-mcp`](https://github.com/steveyegge/beads) | `go install github.com/steveyegge/beads/cmd/bd@latest` |
+| Docker daemon | Running with access to build images |
+| Anthropic API key | Set as `ANTHROPIC_API_KEY` in environment |
+| A `beads` project with open work items | Fracture creates these; see the [fracture](https://github.com/tersecontext/fracture) repo |
+
 ## Requirements
 
 - Python 3.11+
