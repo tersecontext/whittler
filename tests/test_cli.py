@@ -199,3 +199,29 @@ def test_argument_parsing_run():
     assert args.command == "run"
     assert args.lanes == 4
     assert hasattr(args, "func")
+
+
+# ---------------------------------------------------------------------------
+# Test 8: env var same as default still overrides file
+# ---------------------------------------------------------------------------
+
+def test_env_var_same_as_default_still_overrides_file(tmp_path, monkeypatch):
+    """yaml max_lanes: 5, WHITTLER_MAX_LANES=2 (the default) → config.max_lanes == 2.
+
+    This tests that env vars override file values even when the env value equals
+    the compiled default (i.e., when using direct os.environ inspection rather than
+    comparing against a fresh WhittlerConfig()).
+    """
+    monkeypatch.chdir(tmp_path)
+    for key in list(os.environ):
+        if key.startswith("WHITTLER_"):
+            monkeypatch.delenv(key)
+    monkeypatch.setenv("WHITTLER_MAX_LANES", "2")
+
+    cfg_file = tmp_path / "w.yaml"
+    cfg_file.write_text("max_lanes: 5\n")
+
+    args = _make_args(config=str(cfg_file))
+    config = _resolve_config(args)
+
+    assert config.max_lanes == 2

@@ -74,15 +74,18 @@ def _resolve_config(args: Namespace) -> WhittlerConfig:
     if config_path is not None:
         config = WhittlerConfig.from_file(config_path)
 
-    # 3. Apply env var overrides
-    env_config = WhittlerConfig.from_env()
-    # Apply only fields that differ from the pure default (i.e. were set by env)
-    default = WhittlerConfig()
-    env_overrides = {
-        f.name: getattr(env_config, f.name)
-        for f in dataclasses.fields(WhittlerConfig)
-        if getattr(env_config, f.name) != getattr(default, f.name)
-    }
+    # 3. Apply env var overrides — directly inspect os.environ to respect env < CLI precedence
+    # even when the env value equals the compiled default.
+    env_overrides = {}
+    for f in dataclasses.fields(WhittlerConfig):
+        env_key = f"WHITTLER_{f.name.upper()}"
+        raw = os.environ.get(env_key)
+        if raw is not None:
+            target_type = type(f.default) if not isinstance(f.default, dataclasses.Field) else type(getattr(WhittlerConfig(), f.name))
+            try:
+                env_overrides[f.name] = target_type(raw)
+            except (ValueError, TypeError) as e:
+                raise ValueError(f"{env_key}={raw}: cannot convert to {target_type.__name__}") from None
     if env_overrides:
         config = dataclasses.replace(config, **env_overrides)
 
