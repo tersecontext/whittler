@@ -172,6 +172,7 @@ class Orchestrator:
                         record.state = BeadState.Closed
                         record.outcome = "merged"
                         record.completed_at = time.time()
+                        self._attempt_counts.pop(bead.id, None)
                         await git.remove_worktree(worktree_path, branch, self.config.repo_root)
                         await beads.close(bead.id, self.config.repo_root)
                         await beads.feedback(bead.id, bead.description, changed_files, self.config.repo_root)
@@ -267,6 +268,11 @@ class Orchestrator:
                 await self._container_mgr.kill(record.container_id)
             if record.worktree_path:
                 await git.remove_worktree(record.worktree_path, record.branch, self.config.repo_root)
+            # Best-effort unclaim so bead doesn't stay permanently claimed
+            try:
+                await beads.unclaim(bead.id, self.config.repo_root)
+            except Exception:
+                pass
 
         finally:
             if record.container_id:
@@ -284,7 +290,7 @@ class Orchestrator:
             return await self._process_bead_inner(bead)
 
     def handle_signal(self, sig):
-        """Set shutdown event. Current batch finishes, no new beads claimed."""
+        """Set shutdown event. Must be called from within the event loop (e.g. via loop.add_signal_handler)."""
         self.logger.info("Received signal %s, initiating graceful shutdown", sig)
         self._shutdown.set()
         loop = asyncio.get_running_loop()
@@ -297,9 +303,8 @@ class Orchestrator:
 
     def _log_event(self, event: str, bead_id: str, **kwargs):
         """Emit a structured JSON log line for key lifecycle transitions."""
-        import json as _json
         payload = {"event": event, "bead_id": bead_id, **kwargs}
-        self.logger.info("WHITTLER_EVENT %s", _json.dumps(payload))
+        self.logger.info("WHITTLER_EVENT %s", json.dumps(payload))
 
     def _save_state(self):
         """Persist in-flight bead records to state file."""

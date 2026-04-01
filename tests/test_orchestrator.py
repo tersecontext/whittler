@@ -393,7 +393,7 @@ def test_handle_signal_schedules_force_shutdown():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_cancelled_error_unclames_bead():
+async def test_cancelled_error_unclaims_bead():
     orch = make_orchestrator()
     bead = make_bead()
     mock_unclaim = AsyncMock(return_value=True)
@@ -413,4 +413,31 @@ async def test_cancelled_error_unclames_bead():
         with pytest.raises(asyncio.CancelledError):
             await orch._process_bead_inner(bead)
 
+    mock_unclaim.assert_called_once_with(bead.id, orch.config.repo_root)
+
+
+# ---------------------------------------------------------------------------
+# Test 13: generic Exception triggers best-effort unclaim
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_exception_in_worktree_creation_unclames_bead():
+    """An unexpected exception after claim triggers best-effort unclaim."""
+    orch = make_orchestrator()
+    bead = make_bead()
+    mock_unclaim = AsyncMock(return_value=True)
+
+    with (
+        patch("whittler.orchestrator.beads.claim", AsyncMock(return_value=True)),
+        patch("whittler.orchestrator.beads.unclaim", mock_unclaim),
+        patch(
+            "whittler.orchestrator.git.create_worktree",
+            AsyncMock(side_effect=RuntimeError("disk error")),
+        ),
+        patch.object(orch, "_save_state"),
+    ):
+        record = await orch.process_bead(bead)
+
+    assert record.outcome == "error"
+    assert record.state == BeadState.Failed
     mock_unclaim.assert_called_once_with(bead.id, orch.config.repo_root)
