@@ -71,11 +71,7 @@ class Orchestrator:
                     continue
 
                 # c. Dispatch tasks bounded by semaphore
-                async def _bounded(bead: BeadConfig) -> BeadRecord:
-                    async with self._semaphore:
-                        return await self._process_bead_inner(bead)
-
-                tasks = [asyncio.create_task(_bounded(bead)) for bead in ready_beads]
+                tasks = [asyncio.create_task(self.process_bead(bead)) for bead in ready_beads]
 
                 # d. await gather
                 results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -171,6 +167,9 @@ class Orchestrator:
                         await beads.feedback(bead.id, bead.description, changed_files, self.config.repo_root)
                     else:
                         # Merge conflict — preserve worktree for human review
+                        # Intentionally leave bead claimed — conflict requires human resolution.
+                        # A claimed bead won't be returned by beads.ready(), preventing duplicate work.
+                        # Human must manually unclaim or resolve after fixing the conflict.
                         record.state = BeadState.Failed
                         record.outcome = "conflict"
                         self.logger.error(
@@ -218,8 +217,9 @@ class Orchestrator:
         finally:
             if record.container_id:
                 await self._container_mgr.cleanup(record.container_id)
-            # Remove from in-flight state
-            self._state.pop(bead.id, None)
+            # Keep conflict-state beads in state so humans can see them on restart
+            if record.outcome != "conflict":
+                self._state.pop(bead.id, None)
             self._save_state()
 
         return record
@@ -241,7 +241,7 @@ class Orchestrator:
             with open(self.config.state_file, "w") as f:
                 json.dump(state_data, f, indent=2)
         except OSError as e:
-            self.logger.warning("Failed to save state: %s", e)
+            self.logger.error("Failed to save state: %s", e)
 
     def _load_state(self) -> dict[str, BeadRecord]:
         """Load state from file for crash recovery."""
